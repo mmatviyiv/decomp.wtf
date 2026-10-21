@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pet — reconstruction tracker</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #161a21; --panel-2: #1c222b; --text: #e6e9ef;
+    --muted: #98a2b3; --border: #262d38; --accent: #6ea8fe; --ok: #4ade80;
+    --warn: #fbbf24; --bad: #f87171; --chip: #232a35;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f6f7f9; --panel:#ffffff; --panel-2:#f1f3f6; --text:#101828;
+            --muted:#667085; --border:#e4e7ec; --accent:#2563eb; --chip:#eef2f7; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--text); }
+  header { display:flex; align-items:center; gap:16px; padding:14px 20px;
+           border-bottom:1px solid var(--border); position:sticky; top:0;
+           background: color-mix(in srgb, var(--bg) 88%, transparent);
+           backdrop-filter: blur(8px); z-index:5; }
+  header h1 { font-size:15px; margin:0; font-weight:650; }
+  header .path { color:var(--muted); font-family:ui-monospace, monospace; font-size:12px; }
+  .spacer { flex:1; }
+  .cards { display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:10px;
+           padding:16px 20px 6px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px;
+          padding:10px 12px; }
+  .card .k { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
+  .card .v { font-size:20px; font-weight:650; margin-top:2px; }
+  .bar { height:6px; background:var(--panel-2); border-radius:99px; overflow:hidden; margin-top:6px; }
+  .bar > i { display:block; height:100%; background:var(--accent); width:0; }
+  .toolbar { display:flex; gap:8px; align-items:center; padding:10px 20px; flex-wrap:wrap; }
+  input, select, textarea, button { font:inherit; color:var(--text); background:var(--panel);
+          border:1px solid var(--border); border-radius:8px; padding:6px 9px; }
+  textarea { width:100%; min-height:64px; resize:vertical; }
+  button { cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#0b1220; font-weight:600; }
+  button.ghost { background:transparent; }
+  button:disabled { opacity:.5; cursor:default; }
+  .filters { display:flex; gap:6px; flex-wrap:wrap; }
+  .chip { background:var(--chip); border:1px solid var(--border); border-radius:99px;
+          padding:3px 9px; font-size:12px; cursor:pointer; color:var(--muted); }
+  .chip.active { color:var(--text); border-color:var(--accent); }
+  main { display:grid; grid-template-columns: minmax(0,1fr) 380px; gap:14px; padding:0 20px 24px; }
+  .tablewrap { background:var(--panel); border:1px solid var(--border); border-radius:10px;
+               overflow:auto; max-height: calc(100vh - 230px); }
+  table { width:100%; border-collapse:collapse; table-layout:fixed; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--border);
+           white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  th:nth-child(1), td:nth-child(1) { width:118px; }
+  th:nth-child(2), td:nth-child(2) { width:64px; }
+  th:nth-child(3), td:nth-child(3) { width:98px; }
+  th:nth-child(5), td:nth-child(5) { width:96px; }
+  th:nth-child(6), td:nth-child(6) { width:112px; }
+  th { position:sticky; top:0; background:var(--panel-2); font-size:11px;
+       text-transform:uppercase; letter-spacing:.04em; color:var(--muted); z-index:1; }
+  tbody tr { cursor:pointer; }
+  tbody tr:hover { background:var(--panel-2); }
+  tbody tr.active { background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
+  .mono { font-family:ui-monospace, SFMono-Regular, monospace; font-size:12px; }
+  .muted { color:var(--muted); }
+  .state { font-size:11px; padding:2px 7px; border-radius:99px; border:1px solid var(--border); }
+  .s-verified { color:var(--ok); border-color:color-mix(in srgb, var(--ok) 45%, var(--border)); }
+  .s-tested { color:#60a5fa; }
+  .s-compiles { color:#c084fc; }
+  .s-draft { color:var(--warn); }
+  .s-assumption { color:var(--warn); }
+  .s-blocked { color:var(--bad); }
+  aside { background:var(--panel); border:1px solid var(--border); border-radius:10px;
+          padding:14px; max-height: calc(100vh - 190px); overflow:auto; }
+  aside h2 { font-size:14px; margin:0 0 4px; word-break:break-all; }
+  .row { display:flex; gap:8px; align-items:center; margin:8px 0; flex-wrap:wrap; }
+  .field { margin:10px 0; }
+  .field label { display:block; color:var(--muted); font-size:11px; margin-bottom:3px;
+                 text-transform:uppercase; letter-spacing:.04em; }
+  pre.out { background:var(--panel-2); border:1px solid var(--border); border-radius:8px;
+            padding:8px; max-height:200px; overflow:auto; white-space:pre-wrap;
+            font-size:11px; margin:8px 0 0; }
+  .pill { background:var(--chip); border-radius:99px; padding:1px 7px; font-size:11px; }
+  .empty { color:var(--muted); padding:20px; text-align:center; }
+  a { color:var(--accent); }
+  @media (max-width: 1100px) { main { grid-template-columns:1fr; } .cards { grid-template-columns:repeat(3,1fr); } }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">pet</h1>
+  <span class="path" id="binary"></span>
+  <span class="spacer"></span>
+  <span class="muted mono" id="checks"></span>
+  <button class="ghost" id="refresh">Refresh</button>
+</header>
+
+<section class="cards">
+  <div class="card"><div class="k">Verified</div><div class="v" id="c-verified">–</div>
+    <div class="bar"><i id="bar-units"></i></div></div>
+  <div class="card"><div class="k">Units</div><div class="v" id="c-total">–</div></div>
+  <div class="card"><div class="k">Bytes verified</div><div class="v" id="c-bytes">–</div>
+    <div class="bar"><i id="bar-bytes"></i></div></div>
+  <div class="card"><div class="k">Evidence</div><div class="v" id="c-evidence">–</div></div>
+  <div class="card"><div class="k">Assumptions</div><div class="v" id="c-assumptions">–</div></div>
+  <div class="card"><div class="k">Blocked</div><div class="v" id="c-blocked">–</div></div>
+</section>
+
+<section class="toolbar">
+  <select id="state-filter">
+    <option value="">All states</option>
+  </select>
+  <input id="q" placeholder="Search address or symbol" size="34">
+  <input id="agent" value="ui" size="8" title="agent name">
+  <button class="primary" id="claim-next">Claim next</button>
+  <span class="spacer"></span>
+  <span class="muted" id="count"></span>
+  <button class="ghost" id="prev">Prev</button>
+  <button class="ghost" id="next">Next</button>
+  <a class="chip" href="/api/export">Export markdown</a>
+</section>
+
+<main>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Address</th><th>Size</th><th>State</th><th>Unit</th>
+        <th>Evidence</th><th>Claim</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>No units match.</div>
+  </div>
+
+  <aside id="detail" hidden>
+    <h2 id="d-name">—</h2>
+    <div class="row">
+      <span class="mono muted" id="d-address"></span>
+      <span class="pill" id="d-size"></span>
+      <span class="state" id="d-state"></span>
+    </div>
+
+    <div class="field">
+      <label>State</label>
+      <div class="row">
+        <select id="d-state-select"></select>
+        <button class="ghost" id="d-state-apply">Apply</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Checks</label>
+      <div class="row">
+        <button class="ghost" id="d-build">Run build</button>
+        <button class="ghost" id="d-test">Run test</button>
+      </div>
+      <pre class="out" id="d-out" hidden></pre>
+    </div>
+
+    <div class="field">
+      <label>Evidence (REA / Ghidra)</label>
+      <div class="row">
+        <input id="d-evidence-id" placeholder="ev_…" size="18">
+        <button class="ghost" id="d-evidence-add">Attach</button>
+      </div>
+      <div class="row" id="d-evidence-list"></div>
+    </div>
+
+    <div class="field">
+      <label>Note</label>
+      <textarea id="d-note" placeholder="What did you try? What is left?"></textarea>
+      <div class="row">
+        <button class="ghost" id="d-note-add">Add note</button>
+        <button class="ghost" id="d-release">Release claim</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Recent events</label>
+      <div id="d-events" class="muted mono"></div>
+    </div>
+  </aside>
+</main>
+
+<script>
+const states = ["open","draft","compiles","tested","verified","assumption","blocked"];
+const $ = (id) => document.getElementById(id);
+let current = null;
+let offset = 0;
+const limit = 200;
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+}
+
+async function json(url, options) {
+  const response = await fetch(url, options);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || response.statusText);
+  return data;
+}
+
+function post(path, body) {
+  return json(path, { method:"POST", headers:{ "Content-Type":"application/json" },
+                      body: JSON.stringify(body) });
+}
+
+function paintState(el, state) {
+  el.textContent = state;
+  el.className = "state s-" + state;
+}
+
+async function loadStatus() {
+  const data = await json("/api/status");
+  $("title").textContent = data.project.name;
+  $("binary").textContent = data.project.binary || "";
+  $("checks").textContent = [
+    data.config.build ? "build: " + data.config.build : "",
+    data.config.test ? "test: " + data.config.test : ""
+  ].filter(Boolean).join("  ·  ");
+  const s = data.summary;
+  $("c-verified").textContent = s.verified + " / " + s.total;
+  $("c-total").textContent = s.total;
+  $("c-bytes").textContent = (s.percent_bytes < 0.1 ? s.percent_bytes.toFixed(3) : s.percent_bytes.toFixed(1)) + "%";
+  $("c-evidence").textContent = s.evidence;
+  $("c-assumptions").textContent = s.assumptions;
+  $("c-blocked").textContent = s.blocked;
+  $("bar-units").style.width = s.percent_units.toFixed(2) + "%";
+  $("bar-bytes").style.width = s.percent_bytes.toFixed(2) + "%";
+  if ($("state-filter").options.length === 1) {
+    states.forEach((state) => {
+      const option = document.createElement("option");
+      option.value = state; option.textContent = state;
+      $("state-filter").appendChild(option);
+      const stateOption = option.cloneNode(true);
+      $("d-state-select").appendChild(stateOption);
+    });
+  }
+}
+
+async function loadUnits() {
+  const params = new URLSearchParams({ limit, offset });
+  if ($("state-filter").value) params.set("state", $("state-filter").value);
+  if ($("q").value.trim()) params.set("q", $("q").value.trim());
+  const data = await json("/api/units?" + params);
+  const rows = $("rows");
+  rows.innerHTML = "";
+  $("empty").hidden = data.items.length !== 0;
+  $("count").textContent = data.total + " units";
+  for (const unit of data.items) {
+    const tr = document.createElement("tr");
+    if (current && current.id === unit.id) tr.classList.add("active");
+    tr.innerHTML = `
+      <td class="mono">${esc(unit.address)}</td>
+      <td class="mono muted">${unit.size}</td>
+      <td><span class="state s-${esc(unit.state)}">${esc(unit.state)}</span></td>
+      <td class="mono">${esc(unit.demangled || unit.name)}</td>
+      <td class="muted">${unit.evidence.length}</td>
+      <td class="muted">${unit.claim ? esc(unit.claim.agent) : ""}</td>`;
+    tr.onclick = () => selectUnit(unit.address);
+    rows.appendChild(tr);
+  }
+  if (current) {
+    const still = data.items.find((unit) => unit.id === current.id);
+    if (still) current = still;
+  }
+}
+
+function renderDetail(unit) {
+  current = unit;
+  $("detail").hidden = false;
+  $("d-name").textContent = unit.demangled || unit.name;
+  $("d-address").textContent = unit.address;
+  $("d-size").textContent = unit.size + " B";
+  paintState($("d-state"), unit.state);
+  $("d-state-select").value = unit.state;
+  $("d-evidence-list").innerHTML = unit.evidence.length
+    ? unit.evidence.map((e) => `<span class="pill" title="${esc(e.note || "")}">${esc(e.id)}</span>`).join("")
+    : '<span class="muted">none</span>';
+  $("d-events").innerHTML = (unit.events || []).map((e) =>
+    `${new Date(e.created_at * 1000).toLocaleTimeString()} ${esc(e.agent || "—")} ${esc(e.kind)} ${esc(e.detail || "")}`
+  ).join("<br>") || '<span class="muted">none</span>';
+  document.querySelectorAll("#rows tr").forEach((tr, index) => {
+    tr.classList.toggle("active", tr.children[0]?.textContent === unit.address);
+  });
+}
+
+async function selectUnit(key) {
+  const unit = await json("/api/unit/" + encodeURIComponent(key));
+  renderDetail(unit);
+}
+
+async function refreshAll() {
+  await loadStatus();
+  await loadUnits();
+}
+
+$("refresh").onclick = refreshAll;
+$("state-filter").onchange = () => { offset = 0; loadUnits(); };
+$("q").oninput = debounce(() => { offset = 0; loadUnits(); }, 200);
+$("prev").onclick = () => { offset = Math.max(0, offset - limit); loadUnits(); };
+$("next").onclick = () => { offset += limit; loadUnits(); };
+
+$("claim-next").onclick = async () => {
+  try {
+    const unit = await post("/api/claim", { agent: $("agent").value });
+    renderDetail(unit);
+    await refreshAll();
+  } catch (error) { alert(error.message); }
+};
+
+$("d-state-apply").onclick = async () => {
+  if (!current) return;
+  try {
+    renderDetail(await post("/api/state", { unit: current.address,
+                                            state: $("d-state-select").value,
+                                            agent: $("agent").value }));
+    await refreshAll();
+  } catch (error) { alert(error.message); }
+};
+
+$("d-evidence-add").onclick = async () => {
+  if (!current) return;
+  const id = $("d-evidence-id").value.trim();
+  if (!id) return;
+  try {
+    renderDetail(await post("/api/evidence", { unit: current.address, id,
+                                               agent: $("agent").value }));
+    $("d-evidence-id").value = "";
+    await refreshAll();
+  } catch (error) { alert(error.message); }
+};
+
+$("d-note-add").onclick = async () => {
+  if (!current) return;
+  const text = $("d-note").value.trim();
+  if (!text) return;
+  try {
+    renderDetail(await post("/api/note", { unit: current.address, text,
+                                           agent: $("agent").value }));
+    $("d-note").value = "";
+  } catch (error) { alert(error.message); }
+};
+
+$("d-release").onclick = async () => {
+  if (!current) return;
+  const notes = $("d-note").value.trim();
+  if (!notes) { alert("Add notes before releasing."); return; }
+  try {
+    renderDetail(await post("/api/release", { unit: current.address, notes,
+                                              agent: $("agent").value }));
+    $("d-note").value = "";
+    await refreshAll();
+  } catch (error) { alert(error.message); }
+};
+
+async function runCheck(kind) {
+  if (!current) return;
+  const output = $("d-out");
+  output.hidden = false;
+  output.textContent = "running " + kind + "…";
+  try {
+    const result = await post("/api/check", { check: kind, unit: current.address,
+                                              agent: $("agent").value });
+    output.textContent = (result.ok ? "✓ " : "✗ ") + kind + "\n" + result.output;
+    if (result.unit) renderDetail(result.unit);
+    await refreshAll();
+  } catch (error) {
+    output.textContent = "error: " + error.message;
+  }
+}
+$("d-build").onclick = () => runCheck("build");
+$("d-test").onclick = () => runCheck("test");
+
+function debounce(fn, ms) {
+  let timer;
+  return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
+}
+
+refreshAll();
+setInterval(() => { loadStatus(); }, 5000);
+</script>
+</body>
+</html>

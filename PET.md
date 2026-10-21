@@ -20,6 +20,7 @@ pet run test  --unit 0x100012340                 # -> gates tested/verified
 pet evidence 0x100012340 --id ev_abc --note "selector literal"
 pet state 0x100012340 verified
 pet export -o docs/progress.md
+pet ui                                           # local web UI at 127.0.0.1:8765
 pet mcp                                          # stdio MCP for agents
 ```
 
@@ -35,6 +36,7 @@ pet mcp                                          # stdio MCP for agents
 | `progress.py` | weighted completion: open 0, draft .2, compiles .4, tested .8, verified 1, assumption .6 |
 | `verify.py` | runs the project's `build`/`test` commands from `pet.toml` |
 | `mcp.py` | minimal JSON-RPC stdio server: `project_info`, `claim_unit`, `add_note`, `attach_evidence`, `set_state`, `run_check`, `import_binary`, `export_progress`, … |
+| `server.py` + `static/index.html` | local web UI: progress cards, filter/search, unit table, detail panel, claim/release, Evidence, build/test output, events; JSON API under `/api/*` |
 
 ## pet.toml
 
@@ -74,3 +76,30 @@ IDs, and releases with notes when stuck. Claims and notes are shared through
 Forked from `i12bp8/decomp.wtf` (MIT, archived). The ROM pipeline, pinned
 period compilers, WSL/Linux installers and web UI are still in the tree for
 reference but are not used by `pet`.
+
+## Web UI
+
+```
+./pet ui                  # http://127.0.0.1:8765/ (opens the browser)
+./pet ui --port 9000 --no-open
+```
+
+Loopback only. The page is dependency-free HTML/CSS/JS and uses the same
+`Store` methods as the CLI. API:
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/status` | project, weighted progress, claims, configured checks |
+| GET | `/api/units?state=&q=&limit=&offset=` | filtered unit page |
+| GET | `/api/unit/<address or name>` | unit, evidence, checks, events |
+| GET | `/api/events` | recent project events |
+| GET | `/api/export` | markdown progress report |
+| POST | `/api/claim` `{unit?, agent}` | claim a unit (next smallest when omitted) |
+| POST | `/api/release` `{unit, notes, agent}` | release with notes (required) |
+| POST | `/api/evidence` `{unit, id, note?}` | attach Evidence |
+| POST | `/api/note` `{unit, text}` | append a note |
+| POST | `/api/state` `{unit, state}` | tested/verified require a passing `test` check |
+| POST | `/api/check` `{check: build|test, unit?}` | run the configured command |
+
+The UI auto-refreshes the summary every 5 s; the table reloads after every
+mutation.

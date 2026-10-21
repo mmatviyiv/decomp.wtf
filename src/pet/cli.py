@@ -216,6 +216,13 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_ui(args) -> int:
+    from .server import serve
+    serve(Path(args.project or ".").resolve(), args.host, args.port,
+          open_browser=not args.no_open)
+    return 0
+
+
 def cmd_mcp(args) -> int:
     root = Path(args.project or ".").resolve()
     mcp.serve(root)
@@ -285,6 +292,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("export", help="write a markdown progress report")
     p.add_argument("--output", "-o")
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("ui", help="local web interface")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--no-open", action="store_true")
+    p.set_defaults(func=cmd_ui)
 
     p = sub.add_parser("mcp", help="serve MCP tools over stdio")
     p.set_defaults(func=cmd_mcp)
