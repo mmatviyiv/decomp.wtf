@@ -8,10 +8,15 @@ import sys
 from pathlib import Path
 
 from . import mcp, progress
+from .brief import brief, brief_text
 from .config import ProjectConfig
+from .edit import apply_code
 from .db import STATES, Store
 from .inventory import inventory, load_names
 from .verify import run_check
+
+import json as _json
+import subprocess
 
 DEFAULT_DB = Path(".pet/state.db")
 
@@ -216,6 +221,178 @@ def cmd_export(args) -> int:
     return 0
 
 
+def _unit_env(unit) -> dict:
+    return {"PET_UNIT_ADDRESS": unit["address"], "PET_UNIT_NAME": unit["demangled"] or unit["name"]}
+
+
+def cmd_brief(args) -> int:
+    store, project = _project_and_store(args)
+    unit = store.unit(project["id"], args.unit)
+    data = brief(store, project, unit)
+    if args.json:
+        print(_json.dumps(data, indent=2))
+    else:
+        print(brief_text(data, include_asm=not args.no_asm))
+    store.close()
+    return 0
+
+
+def cmd_bind(args) -> int:
+    store, project = _project_and_store(args)
+    unit = store.unit(project["id"], args.unit)
+    path = Path(args.file).resolve()
+    if not path.exists():
+        print(f"no such file: {path}", file=sys.stderr)
+        return 2
+    from .db import Store as _Store
+    with store.db:
+        store.db.execute(
+            """INSERT INTO bindings(unit_id,path,anchor,updated_at) VALUES(?,?,?,strftime('%s','now'))
+               ON CONFLICT(unit_id) DO UPDATE SET path=excluded.path, anchor=excluded.anchor""",
+            (unit["id"], str(path), args.anchor or unit["address"]))
+    store.event(project["id"], unit["id"], args.agent, "bind", str(path))
+    print(f"{unit['address']} → {path}")
+    store.close()
+    return 0
+
+
+def cmd_apply(args) -> int:
+    store, project = _project_and_store(args)
+    unit = store.unit(project["id"], args.unit)
+    path = Path(args.file) if args.file else None
+    if path is None:
+        row = store.db.execute("SELECT path FROM bindings WHERE unit_id=?", (unit["id"],)).fetchone()
+        if row is None:
+            print("pass --file or run `pet bind` first", file=sys.stderr)
+            store.close()
+            return 2
+        path = Path(row["path"])
+    if args.code_file:
+        code = Path(args.code_file).read_text(encoding="utf-8")
+    elif args.code is not None:
+        code = args.code
+    elif not sys.stdin.isatty():
+        code = sys.stdin.read()
+    else:
+        code = ""
+    if not code and not (args.old is not None and args.new is not None):
+        print("no code: pass --code, --code-file or pipe it on stdin", file=sys.stderr)
+        store.close()
+        return 2
+    result = apply_code(store, project["id"], unit, path, code,
+                        old=args.old, new=args.new, commit=args.commit,
+                        root=Path(args.project or ".").resolve())
+    print(f"wrote {result['path']} (anchor {result['anchor']})"
+          + (" and committed" if result["committed"] else ""))
+    store.close()
+    return 0
+
+
+def cmd_verify(args) -> int:
+    root = Path(args.project or ".").resolve()
+    config = ProjectConfig.load(root)
+    store = store_for(root)
+    project = store.resolve(slugify(config.name))
+    unit = store.unit(project["id"], args.unit)
+    env = _unit_env(unit)
+    results = {}
+    for check in ("build", "test", "verify"):
+        command = config.checks.command(check)
+        if not command:
+            continue
+        ok, output = run_check(root, command, env=env)
+        store.record_check(unit["id"], check, command, ok, output)
+        store.event(project["id"], unit["id"], args.agent, "check", f"{check}:{'ok' if ok else 'fail'}")
+        results[check] = (ok, output)
+        if not ok:
+            break
+    if results.get("build", (False, ""))[0] and unit["state"] in ("open", "draft"):
+        store.set_state(unit["id"], "compiles")
+    if results.get("test", (False, ""))[0] and store.last_passing(unit["id"], "test"):
+        if unit["state"] in ("open", "draft", "compiles"):
+            store.set_state(unit["id"], "tested")
+    if results.get("verify", (False, ""))[0]:
+        store.set_state(unit["id"], "verified")
+    for check, (ok, output) in results.items():
+        print(f"{check}: {'ok' if ok else 'failed'}")
+        if not ok:
+            print(output.strip()[-4000:])
+    print(f"state: {store.unit(project['id'], unit['address'])['state']}")
+    store.close()
+    return 0 if all(ok for ok, _ in results.values()) else 1
+
+
+def cmd_work(args) -> int:
+    root = Path(args.project or ".").resolve()
+    config = ProjectConfig.load(root)
+    store = store_for(root)
+    project = store.resolve(slugify(config.name))
+    done = 0
+    while args.limit <= 0 or done < args.limit:
+        unit = _next_open(store, project["id"])
+        store.claim(unit["id"], args.agent)
+        store.event(project["id"], unit["id"], args.agent, "claim")
+        payload = _json.dumps({"brief": brief(store, project, unit), "checks": {
+            "build": config.checks.build, "test": config.checks.test,
+            "verify": config.checks.verify}}, indent=2)
+        proc = subprocess.run(args.agent_cmd, cwd=root, shell=True, input=payload,
+                              capture_output=True, text=True, timeout=args.timeout)
+        agent_out = proc.stdout.strip()
+        if proc.returncode != 0:
+            store.release(unit["id"], f"agent failed: {proc.stderr.strip()[-1000:]}", args.agent)
+            store.event(project["id"], unit["id"], args.agent, "release", "agent failed")
+            print(f"{unit['address']} agent failed")
+            store.close()
+            return 1
+        try:
+            response = _json.loads(agent_out[agent_out.index("{"):agent_out.rindex("}") + 1])
+        except (ValueError, IndexError):
+            store.release(unit["id"], "agent produced no JSON", args.agent)
+            print(f"{unit['address']} no JSON from agent")
+            store.close()
+            return 1
+        if response.get("release"):
+            store.release(unit["id"], str(response["release"]), args.agent)
+            store.event(project["id"], unit["id"], args.agent, "release", str(response["release"]))
+            print(f"{unit['address']} released: {response['release'][:80]}")
+            store.release(unit["id"], str(response["release"]), args.agent)
+            done += 1
+            continue
+        path = response.get("file") or ""
+        code = response.get("code") or ""
+        try:
+            if response.get("old") is not None and response.get("new") is not None:
+                apply_code(store, project["id"], unit, Path(path), "", old=response["old"],
+                           new=response["new"], root=root)
+            else:
+                apply_code(store, project["id"], unit, Path(path), code, root=root)
+        except SystemExit as error:
+            store.release(unit["id"], f"apply failed: {error}", args.agent)
+            print(f"{unit['address']} apply failed: {error}")
+            done += 1
+            continue
+        code_ok = True
+        env = _unit_env(unit)
+        for check in ("build", "test", "verify"):
+            command = config.checks.command(check)
+            if not command:
+                continue
+            ok, output = run_check(root, command, env=env)
+            store.record_check(unit["id"], check, command, ok, output)
+            if not ok:
+                code_ok = False
+                break
+        if code_ok and store.last_passing(unit["id"], "test"):
+            state = "verified" if store.last_passing(unit["id"], "verify") else "tested"
+            store.set_state(unit["id"], state)
+        store.release(unit["id"], response.get("notes") or "agent turn", args.agent)
+        done += 1
+        print(f"{unit['address']} {'ok' if code_ok else 'needs work'} → "
+              f"{store.unit(project['id'], unit['address'])['state']}")
+    store.close()
+    return 0
+
+
 def cmd_ui(args) -> int:
     from .server import serve
     serve(Path(args.project or ".").resolve(), args.host, args.port,
@@ -292,6 +469,43 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("export", help="write a markdown progress report")
     p.add_argument("--output", "-o")
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("brief", help="disassembly, evidence and neighbours for a unit")
+    p.add_argument("unit")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--no-asm", action="store_true")
+    p.set_defaults(func=cmd_brief)
+
+    p = sub.add_parser("bind", help="bind a unit to a source file")
+    p.add_argument("unit")
+    p.add_argument("--file", required=True)
+    p.add_argument("--anchor")
+    p.add_argument("--agent", default="me")
+    p.set_defaults(func=cmd_bind)
+
+    p = sub.add_parser("apply", help="write code into the bound source file")
+    p.add_argument("unit")
+    p.add_argument("--file")
+    p.add_argument("--code")
+    p.add_argument("--code-file")
+    p.add_argument("--old")
+    p.add_argument("--new")
+    p.add_argument("--commit", action="store_true")
+    p.add_argument("--agent", default="me")
+    p.set_defaults(func=cmd_apply)
+
+    p = sub.add_parser("verify", help="build, test and optional per-unit verify")
+    p.add_argument("unit")
+    p.add_argument("--agent", default="me")
+    p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("work", help="run an external agent command over claimed units")
+    p.add_argument("--agent-cmd", required=True,
+                   help="command reading the brief JSON on stdin and printing a JSON edit")
+    p.add_argument("--limit", type=int, default=0, help="0 = until nothing is left")
+    p.add_argument("--timeout", type=int, default=1800)
+    p.add_argument("--agent", default="work")
+    p.set_defaults(func=cmd_work)
 
     p = sub.add_parser("ui", help="local web interface")
     p.add_argument("--host", default="127.0.0.1")

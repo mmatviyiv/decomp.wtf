@@ -53,8 +53,10 @@
   th:nth-child(1), td:nth-child(1) { width:118px; }
   th:nth-child(2), td:nth-child(2) { width:64px; }
   th:nth-child(3), td:nth-child(3) { width:98px; }
-  th:nth-child(5), td:nth-child(5) { width:96px; }
-  th:nth-child(6), td:nth-child(6) { width:112px; }
+  th:nth-child(5), td:nth-child(5) { width:78px; }
+  th:nth-child(6), td:nth-child(6) { width:96px; }
+  th:nth-child(7), td:nth-child(7) { width:112px; }
+  pre.asm { max-height:260px; }
   th { position:sticky; top:0; background:var(--panel-2); font-size:11px;
        text-transform:uppercase; letter-spacing:.04em; color:var(--muted); z-index:1; }
   tbody tr { cursor:pointer; }
@@ -123,7 +125,7 @@
   <div class="tablewrap">
     <table>
       <thead><tr><th>Address</th><th>Size</th><th>State</th><th>Unit</th>
-        <th>Evidence</th><th>Claim</th></tr></thead>
+        <th>Score</th><th>Evidence</th><th>Claim</th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
     <div class="empty" id="empty" hidden>No units match.</div>
@@ -143,6 +145,25 @@
         <select id="d-state-select"></select>
         <button class="ghost" id="d-state-apply">Apply</button>
       </div>
+    </div>
+
+    <div class="field">
+      <label>Source binding</label>
+      <div class="row">
+        <input id="d-file" placeholder="/path/to/File.swift" size="26">
+        <button class="ghost" id="d-bind">Bind</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Reconstructed code <span class="muted">(marker block)</span></label>
+      <textarea id="d-code" placeholder="func foo() { … }" style="min-height:110px"></textarea>
+      <div class="row">
+        <button class="ghost" id="d-apply">Apply to file</button>
+        <button class="ghost" id="d-brief">Brief + asm</button>
+        <button class="ghost" id="d-verify">Verify</button>
+      </div>
+      <pre class="out" id="d-asm" hidden></pre>
     </div>
 
     <div class="field">
@@ -253,6 +274,7 @@ async function loadUnits() {
       <td class="mono muted">${unit.size}</td>
       <td><span class="state s-${esc(unit.state)}">${esc(unit.state)}</span></td>
       <td class="mono">${esc(unit.demangled || unit.name)}</td>
+      <td class="mono">${unit.score ?? 0}</td>
       <td class="muted">${unit.evidence.length}</td>
       <td class="muted">${unit.claim ? esc(unit.claim.agent) : ""}</td>`;
     tr.onclick = () => selectUnit(unit.address);
@@ -275,6 +297,10 @@ function renderDetail(unit) {
   $("d-evidence-list").innerHTML = unit.evidence.length
     ? unit.evidence.map((e) => `<span class="pill" title="${esc(e.note || "")}">${esc(e.id)}</span>`).join("")
     : '<span class="muted">none</span>';
+  $("d-file").value = unit.binding ? unit.binding.path : (unit.binding?.path || "");
+  $("d-code").value = "";
+  $("d-asm").hidden = true;
+  $("d-asm").textContent = "";
   $("d-events").innerHTML = (unit.events || []).map((e) =>
     `${new Date(e.created_at * 1000).toLocaleTimeString()} ${esc(e.agent || "—")} ${esc(e.kind)} ${esc(e.detail || "")}`
   ).join("<br>") || '<span class="muted">none</span>';
@@ -367,6 +393,53 @@ async function runCheck(kind) {
     output.textContent = "error: " + error.message;
   }
 }
+$("d-bind").onclick = async () => {
+  if (!current) return;
+  const file = $("d-file").value.trim();
+  if (!file) { alert("Enter a source file path."); return; }
+  try {
+    const result = await post("/api/bind", { unit: current.address, file,
+                                              agent: $("agent").value });
+    renderDetail(result.unit);
+    await refreshAll();
+  } catch (error) { alert(error.message); }
+};
+
+$("d-apply").onclick = async () => {
+  if (!current) return;
+  const code = $("d-code").value;
+  if (!code.trim()) { alert("Write some code first."); return; }
+  try {
+    const result = await post("/api/apply", { unit: current.address, code,
+                                               agent: $("agent").value });
+    renderDetail(result.unit);
+    await refreshAll();
+  } catch (error) { alert(error.message); }
+};
+
+$("d-brief").onclick = async () => {
+  if (!current) return;
+  const data = await json("/api/brief/" + encodeURIComponent(current.address));
+  const asm = $("d-asm");
+  asm.hidden = false;
+  asm.textContent = data.text || data.asm || "no disassembly";
+};
+
+$("d-verify").onclick = async () => {
+  if (!current) return;
+  const output = $("d-out");
+  output.hidden = false;
+  output.textContent = "running build / test / verify…";
+  try {
+    const result = await post("/api/verify", { unit: current.address,
+                                                agent: $("agent").value });
+    output.textContent = Object.entries(result.results || {}).map(([kind, value]) =>
+      (value.ok ? "✓ " : "✗ ") + kind + "\n" + (value.output || "")).join("\n");
+    if (result.unit) renderDetail(result.unit);
+    await refreshAll();
+  } catch (error) { output.textContent = "error: " + error.message; }
+};
+
 $("d-build").onclick = () => runCheck("build");
 $("d-test").onclick = () => runCheck("test");
 

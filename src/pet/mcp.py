@@ -11,7 +11,9 @@ import sys
 from pathlib import Path
 
 from . import progress
+from .brief import brief, brief_text
 from .config import ProjectConfig
+from .edit import apply_code
 from .db import STATES, Store
 from .inventory import inventory, load_names
 from .verify import run_check
@@ -36,6 +38,16 @@ TOOLS = [
     ("run_check", "Run the configured build or test command.",
      {"check": {"type": "string", "enum": ["build", "test"]},
       "unit": {"type": "string"}}),
+    ("brief_unit", "Disassembly, neighbours, evidence, notes and binding for a unit.",
+     {"unit": {"type": "string"}}),
+    ("bind_unit", "Bind a unit to a source file.",
+     {"unit": {"type": "string"}, "file": {"type": "string"}, "anchor": {"type": "string"}}),
+    ("apply_code", "Write code into the bound (or given) source file.",
+     {"unit": {"type": "string"}, "file": {"type": "string"},
+      "code": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"},
+      "commit": {"type": "boolean", "default": False}}),
+    ("verify_unit", "Run build, test and the optional per-unit verify command.",
+     {"unit": {"type": "string"}}),
     ("import_binary", "Inventory a Mach-O into the project.",
      {"binary": {"type": "string"}, "names": {"type": "string"}}),
     ("export_progress", "Markdown progress table.", {}),
@@ -97,6 +109,62 @@ class Server:
             self.store.set_state(unit["id"], args["state"])
             self.store.event(project["id"], unit["id"], "agent", "state", args["state"])
             return f"{unit['name']} -> {args['state']}"
+        if name == "brief_unit":
+            unit = self.store.unit(project["id"], args["unit"])
+            return brief_text(brief(self.store, project, unit))
+        if name == "bind_unit":
+            unit = self.store.unit(project["id"], args["unit"])
+            path = Path(args["file"]).resolve()
+            if not path.exists():
+                return f"no such file: {path}"
+            with self.store.db:
+                self.store.db.execute(
+                    """INSERT INTO bindings(unit_id,path,anchor,updated_at)
+                       VALUES(?,?,?,strftime('%s','now'))
+                       ON CONFLICT(unit_id) DO UPDATE SET path=excluded.path,
+                         anchor=excluded.anchor""",
+                    (unit["id"], str(path), args.get("anchor") or unit["address"]))
+            self.store.event(project["id"], unit["id"], "agent", "bind", str(path))
+            return f"bound {unit['address']} -> {path}"
+        if name == "apply_code":
+            unit = self.store.unit(project["id"], args["unit"])
+            path = Path(args["file"]) if args.get("file") else None
+            if path is None:
+                row = self.store.db.execute(
+                    "SELECT path FROM bindings WHERE unit_id=?", (unit["id"],)).fetchone()
+                if row is None:
+                    return "pass file or run bind_unit first"
+                path = Path(row["path"])
+            result = apply_code(self.store, project["id"], unit, path,
+                                args.get("code") or "",
+                                old=args.get("old"), new=args.get("new"),
+                                commit=bool(args.get("commit")), root=self.root)
+            return f"wrote {result['path']} (anchor {result['anchor']})" + (
+                " and committed" if result["committed"] else "")
+        if name == "verify_unit":
+            unit = self.store.unit(project["id"], args["unit"])
+            env = {"PET_UNIT_ADDRESS": unit["address"],
+                   "PET_UNIT_NAME": unit["demangled"] or unit["name"]}
+            results = {}
+            for check in ("build", "test", "verify"):
+                command = self.config.checks.command(check)
+                if not command:
+                    continue
+                ok, output = run_check(self.root, command, env=env)
+                self.store.record_check(unit["id"], check, command, ok, output)
+                self.store.event(project["id"], unit["id"], "agent", "check",
+                                 f"{check}:{'ok' if ok else 'fail'}")
+                results[check] = (ok, output)
+                if not ok:
+                    break
+            if results.get("build", (False, ""))[0] and unit["state"] in ("open", "draft"):
+                self.store.set_state(unit["id"], "compiles")
+            if results.get("test", (False, ""))[0]:
+                self.store.set_state(unit["id"], "tested")
+            if results.get("verify", (False, ""))[0]:
+                self.store.set_state(unit["id"], "verified")
+            lines = [f"{check}: {'ok' if ok else 'failed'}" for check, (ok, _) in results.items()]
+            return "\n".join(lines) + f"\nstate: {self.store.unit(project['id'], unit['address'])['state']}"
         if name == "run_check":
             check = args["check"]
             command = self.config.checks.command(check)

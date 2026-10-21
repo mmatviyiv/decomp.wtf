@@ -11,9 +11,12 @@ from pathlib import Path
 class Checks:
     build: str = ""
     test: str = ""
+    # Optional per-unit verifier: exit 0 means this unit is verified. The
+    # command receives PET_UNIT_ADDRESS / PET_UNIT_NAME in its environment.
+    verify: str = ""
 
     def command(self, name: str) -> str:
-        return {"build": self.build, "test": self.test}.get(name, "")
+        return {"build": self.build, "test": self.test, "verify": self.verify}.get(name, "")
 
 
 @dataclass

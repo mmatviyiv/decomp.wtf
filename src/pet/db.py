@@ -49,6 +49,12 @@ CREATE TABLE IF NOT EXISTS events (
     detail TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS bindings (
+    unit_id INTEGER PRIMARY KEY REFERENCES units(id),
+    path TEXT NOT NULL,
+    anchor TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS checks (
     id INTEGER PRIMARY KEY,
     unit_id INTEGER REFERENCES units(id),

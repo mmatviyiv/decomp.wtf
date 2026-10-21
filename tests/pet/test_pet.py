@@ -145,6 +145,99 @@ class CliTests(unittest.TestCase):
                 process.wait(timeout=5)
 
 
+@unittest.skipUnless(SLICE.exists(), "Bartender slice not available")
+class LoopTests(unittest.TestCase):
+    """brief → bind → apply → verify, plus the external-agent runner."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "pet.toml").write_text(
+            f'[project]\nname = "Loop"\nbinary = "{SLICE}"\n\n'
+            '[checks]\nbuild = "true"\ntest = "true"\nverify = "true"\n')
+        (self.root / "Source.swift").write_text("func placeholder() {}\n")
+        self.store = Store(self.root / ".pet/state.db")
+        self.project_id = self.store.upsert_project(
+            "loop", "Loop", self.root, str(SLICE))
+        self.store.add_units(self.project_id, [
+            {"name": "a", "address": "0x100002a98", "size": 92},
+            {"name": "b", "address": "0x100002af4", "size": 184}])
+        self.unit = self.store.unit(self.project_id, "a")
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_brief_has_assembly_and_neighbours(self):
+        from pet.brief import brief
+        project = self.store.resolve("loop")
+        data = brief(self.store, project, self.unit)
+        self.assertIn("sub", data["asm"])
+        self.assertTrue(any(n["address"] == "0x100002af4" for n in data["neighbours"]))
+        self.assertEqual(data["state"], "open")
+
+    def test_apply_writes_marker_block_and_replaces_it(self):
+        from pet.edit import apply_code
+        path = self.root / "Source.swift"
+        apply_code(self.store, self.project_id, self.unit, path, "func first() {}")
+        apply_code(self.store, self.project_id, self.unit, path, "func second() {}")
+        text = path.read_text()
+        self.assertEqual(text.count("pet:begin 0x100002a98"), 1)
+        self.assertIn("func second() {}", text)
+        self.assertNotIn("func first() {}", text)
+        binding = self.store.db.execute(
+            "SELECT path FROM bindings WHERE unit_id=?", (self.unit["id"],)).fetchone()
+        self.assertEqual(binding["path"], str(path.resolve()))
+
+    def test_apply_literal_replacement(self):
+        from pet.edit import apply_code
+        path = self.root / "Source.swift"
+        apply_code(self.store, self.project_id, self.unit, path, "",
+                   old="func placeholder() {}", new="func real() {}")
+        self.assertEqual(path.read_text().strip(), "func real() {}")
+
+    def test_verify_promotes_through_the_chain(self):
+        from pet.cli import cmd_verify
+
+        class Args:
+            project = str(self.root)
+            unit = "0x100002a98"
+            agent = "test"
+        self.assertEqual(cmd_verify(Args()), 0)
+        self.assertEqual(self.store.unit(self.project_id, "0x100002a98")["state"], "verified")
+        self.assertTrue(self.store.last_passing(self.unit["id"], "verify"))
+
+    def test_work_applies_agent_json(self):
+        from pet.cli import cmd_work
+        agent = self.root / "agent.py"
+        agent.write_text(
+            "import json,sys\n"
+            "data=json.load(sys.stdin)\n"
+            "print(json.dumps({'file': '" + str(self.root / 'Source.swift') + "',"
+            " 'code': 'func fromAgent() {}', 'notes': 'done'}))\n")
+
+        Args = type("Args", (), {
+            "project": str(self.root),
+            "agent_cmd": f"{sys.executable} {agent}",
+            "limit": 1,
+            "timeout": 60,
+            "agent": "tester",
+        })
+        self.assertEqual(cmd_work(Args()), 0)
+        self.assertIn("fromAgent", (self.root / "Source.swift").read_text())
+        states = [u["state"] for u in self.store.units(self.project_id)]
+        self.assertIn("verified", states)
+
+
+class McpToolTests(unittest.TestCase):
+    def test_tools_include_the_loop(self):
+        sys.path.insert(0, str(ROOT / "src"))
+        from pet.mcp import TOOLS
+        names = {name for name, _description, _schema in TOOLS}
+        for expected in ("brief_unit", "bind_unit", "apply_code", "verify_unit"):
+            self.assertIn(expected, names)
+
+
 class ServerTests(unittest.TestCase):
     def _api(self, tmp: Path):
         from pet.server import Api

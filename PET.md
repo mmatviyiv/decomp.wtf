@@ -15,10 +15,12 @@ pet init . --binary /path/to/Binary --name "My App"
 pet import --names evidence/procedures.tsv      # optional address→name map
 pet status
 pet claim --agent me                             # smallest free unit
-pet run build --unit 0x100012340                 # -> compiles on success
-pet run test  --unit 0x100012340                 # -> gates tested/verified
+pet brief 0x100012340                            # disassembly, evidence, neighbours
+pet bind  0x100012340 --file Sources/Foo.swift
+pet apply 0x100012340 --code-file /tmp/foo.swift  # marker block in the file
+pet verify 0x100012340                           # build → test → verify, promotes state
 pet evidence 0x100012340 --id ev_abc --note "selector literal"
-pet state 0x100012340 verified
+pet work --agent-cmd "./my-agent" --limit 10     # external agent loop
 pet export -o docs/progress.md
 pet ui                                           # local web UI at 127.0.0.1:8765
 pet mcp                                          # stdio MCP for agents
@@ -34,8 +36,10 @@ pet mcp                                          # stdio MCP for agents
 | `macho.py` | `otool -l` parsing: `__TEXT` vmaddr and the ULEB128 function-start stream |
 | `db.py` | SQLite: projects, units, claims (30 min TTL), evidence, checks, events |
 | `progress.py` | weighted completion: open 0, draft .2, compiles .4, tested .8, verified 1, assumption .6 |
-| `verify.py` | runs the project's `build`/`test` commands from `pet.toml` |
-| `mcp.py` | minimal JSON-RPC stdio server: `project_info`, `claim_unit`, `add_note`, `attach_evidence`, `set_state`, `run_check`, `import_binary`, `export_progress`, … |
+| `brief.py` | disassembly (`objdump`), neighbours, evidence, notes, bindings, checks |
+| `edit.py` | marker-block (`// pet:begin <addr>`) or literal replacement, optional git commit |
+| `verify.py` | runs `build`/`test`/`verify` with `PET_UNIT_ADDRESS`/`PET_UNIT_NAME` in the environment |
+| `mcp.py` | minimal JSON-RPC stdio server: `project_info`, `claim_unit`, `brief_unit`, `bind_unit`, `apply_code`, `verify_unit`, `add_note`, `attach_evidence`, `run_check`, `import_binary`, `export_progress`, … |
 | `server.py` + `static/index.html` | local web UI: progress cards, filter/search, unit table, detail panel, claim/release, Evidence, build/test output, events; JSON API under `/api/*` |
 
 ## pet.toml
@@ -51,9 +55,36 @@ build = "swift build"
 test = "swift test"
 ```
 
-States that claim real progress: `verified` (unit behaves, checks pass,
-Evidence attached). `assumption` counts as partial and is reported separately —
-it must never be silently promoted.
+States that claim real progress: `verified` (unit behaves, checks pass).
+`assumption` counts as partial and is reported separately — it must never be
+silently promoted. `score` in the table/UI is the state base (0–100) plus up to
+10 points for attached Evidence.
+
+### Verification chain
+
+`pet verify <unit>` runs, in order:
+
+1. `build` → state `compiles` on success;
+2. `test` → state `tested`;
+3. optional `verify` (per-unit command; env `PET_UNIT_ADDRESS`,
+   `PET_UNIT_NAME`) → state `verified`.
+
+Only the configured commands can promote a unit; a missing `verify` command
+leaves the unit at `tested`.
+
+### Agent loop
+
+`pet work --agent-cmd "<command>"` claims the next unit, sends a JSON brief on
+stdin, and expects one JSON object on stdout:
+
+```json
+{"file": "Sources/Foo.swift", "code": "func foo() {}", "notes": "first draft"}
+```
+
+or `{"old": "...", "new": "..."}` for a literal edit, or
+`{"release": "what is left"}` to give up. The code is written into the source
+file, `build`/`test`/`verify` run, state is promoted, and the claim is released.
+Any MCP agent (opencode, Claude Code, Codex) can drive the same tools directly.
 
 ## Why not the byte judge
 
@@ -103,3 +134,16 @@ Loopback only. The page is dependency-free HTML/CSS/JS and uses the same
 
 The UI auto-refreshes the summary every 5 s; the table reloads after every
 mutation.
+
+## UI additions
+
+The detail panel now has a **Brief + asm** button (disassembly and neighbours),
+**Source binding**, a **Reconstructed code** box with **Apply to file**, and
+**Verify** (build / test / per-unit verify). New endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/brief/<unit>` | brief JSON plus rendered text |
+| POST | `/api/bind` `{unit, file, anchor?}` | bind a unit to a source file |
+| POST | `/api/apply` `{unit, file?, code, old?, new?, commit?}` | write code |
+| POST | `/api/verify` `{unit}` | run the verification chain |

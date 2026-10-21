@@ -14,7 +14,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import progress
+from .brief import brief, brief_text
 from .config import ProjectConfig
+from .edit import apply_code
 from .db import STATES, Store
 from .verify import run_check
 
@@ -50,6 +52,7 @@ class Api:
         return {
             "id": row["id"], "name": row["name"], "demangled": row["demangled"],
             "address": row["address"], "size": row["size"], "state": row["state"],
+            "score": progress.score(row),
             "evidence": evidence, "notes": row["notes"],
             "claim": dict(claim) if claim else None,
         }
@@ -75,9 +78,76 @@ class Api:
             "SELECT agent,kind,detail,created_at FROM events WHERE unit_id=? ORDER BY id DESC LIMIT 20",
             (row["id"],))]
         data = self.unit_row(row)
+        bind = self.store.db.execute("SELECT path, anchor FROM bindings WHERE unit_id=?",
+                                     (row["id"],)).fetchone()
+        data["binding"] = dict(bind) if bind else None
         data["checks"] = checks
         data["events"] = events
         return data
+
+    def brief(self, key: str) -> dict:
+        unit = self.store.unit(self.project["id"], key)
+        data = brief(self.store, self.project, unit)
+        data["text"] = brief_text(data)
+        return data
+
+    def bind(self, body: dict) -> dict:
+        unit = self.store.unit(self.project["id"], body["unit"])
+        path = Path(body["file"]).resolve()
+        if not path.exists():
+            return {"error": f"no such file: {path}"}
+        with self.store.db:
+            self.store.db.execute(
+                """INSERT INTO bindings(unit_id,path,anchor,updated_at)
+                   VALUES(?,?,?,strftime('%s','now'))
+                   ON CONFLICT(unit_id) DO UPDATE SET path=excluded.path,
+                     anchor=excluded.anchor""",
+                (unit["id"], str(path), body.get("anchor") or unit["address"]))
+        self.store.event(self.project["id"], unit["id"], body.get("agent") or "ui",
+                         "bind", str(path))
+        return {"path": str(path), "unit": self.unit(unit["address"])}
+
+    def apply(self, body: dict) -> dict:
+        unit = self.store.unit(self.project["id"], body["unit"])
+        path = Path(body["file"]) if body.get("file") else None
+        if path is None:
+            row = self.store.db.execute(
+                "SELECT path FROM bindings WHERE unit_id=?", (unit["id"],)).fetchone()
+            if row is None:
+                return {"error": "bind the unit to a file first"}
+            path = Path(row["path"])
+        if not (body.get("code") or "").strip() and body.get("old") is None:
+            return {"error": "no code supplied"}
+        result = apply_code(self.store, self.project["id"], unit, path,
+                            body.get("code") or "", old=body.get("old"),
+                            new=body.get("new"), commit=bool(body.get("commit")),
+                            root=self.root)
+        return {"applied": result, "unit": self.unit(unit["address"])}
+
+    def verify(self, body: dict) -> dict:
+        unit = self.store.unit(self.project["id"], body["unit"])
+        env = {"PET_UNIT_ADDRESS": unit["address"],
+               "PET_UNIT_NAME": unit["demangled"] or unit["name"]}
+        results = {}
+        for check in ("build", "test", "verify"):
+            command = self.config.checks.command(check)
+            if not command:
+                continue
+            ok, output = run_check(self.root, command, env=env)
+            self.store.record_check(unit["id"], check, command, ok, output)
+            self.store.event(self.project["id"], unit["id"], body.get("agent") or "ui",
+                             "check", f"{check}:{'ok' if ok else 'fail'}")
+            results[check] = {"ok": ok, "output": output[-8000:]}
+            if not ok:
+                break
+        if results.get("build", {}).get("ok") and unit["state"] in ("open", "draft"):
+            self.store.set_state(unit["id"], "compiles")
+        if results.get("test", {}).get("ok"):
+            self.store.set_state(unit["id"], "tested")
+        if results.get("verify", {}).get("ok"):
+            self.store.set_state(unit["id"], "verified")
+        return {"results": results, "state": self.store.unit(self.project["id"], unit["address"])["state"],
+                "unit": self.unit(unit["address"])}
 
     def events(self, limit: int = 100) -> list[dict]:
         rows = self.store.db.execute(
@@ -213,6 +283,10 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/export":
             self._send(200, self.api.export().encode("utf-8"), "text/markdown; charset=utf-8")
             return
+        if parsed.path.startswith("/api/brief/"):
+            key = parsed.path.split("/api/brief/", 1)[1]
+            self._json(self.api.brief(key))
+            return
         if parsed.path.startswith("/api/unit/"):
             key = parsed.path.split("/api/unit/", 1)[1]
             self._json(self.api.unit(key))
@@ -233,6 +307,9 @@ class Handler(BaseHTTPRequestHandler):
             "/api/note": self.api.note,
             "/api/state": self.api.state,
             "/api/check": self.api.check,
+            "/api/bind": self.api.bind,
+            "/api/apply": self.api.apply,
+            "/api/verify": self.api.verify,
         }
         handler = routes.get(urlparse(self.path).path)
         if handler is None:

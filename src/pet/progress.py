@@ -6,6 +6,16 @@ from collections import Counter
 
 from .db import DONE_STATES
 
+SCORE = {
+    "open": 0,
+    "draft": 25,
+    "compiles": 55,
+    "tested": 80,
+    "assumption": 50,
+    "blocked": 0,
+    "verified": 100,
+}
+
 WEIGHT = {
     "open": 0.0,
     "draft": 0.2,
@@ -15,6 +25,18 @@ WEIGHT = {
     "assumption": 0.6,
     "blocked": 0.0,
 }
+
+
+def score(unit) -> int:
+    """0-100 indicator for the table: state base plus attached Evidence."""
+    base = SCORE.get(unit["state"], 0)
+    if base >= 100:
+        return 100
+    try:
+        extra = min(10, 2 * len(__import__("json").loads(unit["evidence"] or "[]")))
+    except ValueError:
+        extra = 0
+    return min(99, base + extra)
 
 
 def summarize(units) -> dict:
