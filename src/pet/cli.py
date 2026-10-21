@@ -225,6 +225,23 @@ def _unit_env(unit) -> dict:
     return {"PET_UNIT_ADDRESS": unit["address"], "PET_UNIT_NAME": unit["demangled"] or unit["name"]}
 
 
+def cmd_analyze(args) -> int:
+    from .analyze import analyze
+    report = analyze(Path(args.binary), Path(args.out),
+                     Path(args.names) if args.names else None,
+                     Path(args.sources) if args.sources else None)
+    print(f"binary: {report['binary']}")
+    print(f"functions: {report['functions']} ({report['named_functions']} named)")
+    print(f"classes: {len(report['classes'])}, imports: {report['imports']}, "
+          f"libraries: {len(report['libraries'])}")
+    print(f"strings: {report['strings'].get('total',0)} "
+          f"({report['strings'].get('urls',0)} urls, {report['strings'].get('keys',0)} keys)")
+    print(f"unknowns: {report['unknowns']['functions_without_names']} unnamed functions, "
+          f"{len(report['unknowns']['classes_without_source'])} classes without source")
+    print(f"wrote: {Path(args.out) / 'report.md'}, inventory.json, units.tsv, unknowns.md, strings.txt")
+    return 0
+
+
 def cmd_brief(args) -> int:
     store, project = _project_and_store(args)
     unit = store.unit(project["id"], args.unit)
@@ -469,6 +486,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("export", help="write a markdown progress report")
     p.add_argument("--output", "-o")
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("analyze", help="one-shot binary report: inventory and unknowns")
+    p.add_argument("binary")
+    p.add_argument("--out", required=True)
+    p.add_argument("--names", help="address<TAB>name file")
+    p.add_argument("--sources", help="reconstructed source tree to compare classes against")
+    p.set_defaults(func=cmd_analyze)
 
     p = sub.add_parser("brief", help="disassembly, evidence and neighbours for a unit")
     p.add_argument("unit")

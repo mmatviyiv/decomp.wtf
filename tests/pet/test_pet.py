@@ -238,6 +238,27 @@ class McpToolTests(unittest.TestCase):
             self.assertIn(expected, names)
 
 
+@unittest.skipUnless(SLICE.exists(), "Bartender slice not available")
+class AnalyzeTests(unittest.TestCase):
+    def test_one_shot_report(self):
+        from pet.analyze import analyze
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            sources = Path(tmp) / "Sources"
+            sources.mkdir()
+            (sources / "Known.swift").write_text("final class AppDelegate {}\n")
+            report = analyze(SLICE, out, sources=sources)
+            self.assertGreater(report["functions"], 1000)
+            self.assertEqual(report["arch"], "arm64")
+            self.assertTrue(report["build"]["uuid"])
+            for name in ("report.md", "inventory.json", "units.tsv",
+                         "unknowns.md", "strings.txt"):
+                self.assertTrue((out / name).exists(), name)
+            self.assertIn("AppDelegate", report["classes"])
+            self.assertNotIn("AppDelegate", report["unknowns"]["classes_without_source"])
+            self.assertTrue(report["unknowns"]["classes_without_source"])
+
+
 class ServerTests(unittest.TestCase):
     def _api(self, tmp: Path):
         from pet.server import Api

@@ -1,7 +1,8 @@
 > **Fork note.** This fork adds `pet`, a macOS-software reconstruction tracker
 > (Mach-O inventory, claims, Evidence and build/test verification) that replaces
 > the ROM byte-match pipeline. See [PET.md](PET.md); `./pet ui` opens the local
-> tracker. The upstream notice below
+> tracker. `./pet analyze <binary> --out <dir>` prints an inventory plus what is
+> still unclear. The upstream notice below
 > still applies to the original code.
 
 ## This project is discontinued

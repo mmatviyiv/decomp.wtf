@@ -11,6 +11,10 @@ stripping, LTO and code signing make byte equality a poor oracle.
 ## Loop
 
 ```
+# one-shot: binary in, report + unknowns out
+pet analyze /path/to/Binary --out .pet/analysis \
+    --names evidence/procedures.tsv --sources main/Sources/MyApp
+
 pet init . --binary /path/to/Binary --name "My App"
 pet import --names evidence/procedures.tsv      # optional address→name map
 pet status
@@ -36,6 +40,7 @@ pet mcp                                          # stdio MCP for agents
 | `macho.py` | `otool -l` parsing: `__TEXT` vmaddr and the ULEB128 function-start stream |
 | `db.py` | SQLite: projects, units, claims (30 min TTL), evidence, checks, events |
 | `progress.py` | weighted completion: open 0, draft .2, compiles .4, tested .8, verified 1, assumption .6 |
+| `analyze.py` | one-shot report: Mach-O build metadata, function starts, ObjC/Swift classes, imports, libraries, strings; writes `report.md`, `inventory.json`, `units.tsv`, `unknowns.md`, `strings.txt` |
 | `brief.py` | disassembly (`objdump`), neighbours, evidence, notes, bindings, checks |
 | `edit.py` | marker-block (`// pet:begin <addr>`) or literal replacement, optional git commit |
 | `verify.py` | runs `build`/`test`/`verify` with `PET_UNIT_ADDRESS`/`PET_UNIT_NAME` in the environment |
@@ -147,3 +152,21 @@ The detail panel now has a **Brief + asm** button (disassembly and neighbours),
 | POST | `/api/bind` `{unit, file, anchor?}` | bind a unit to a source file |
 | POST | `/api/apply` `{unit, file?, code, old?, new?, commit?}` | write code |
 | POST | `/api/verify` `{unit}` | run the verification chain |
+
+## One-shot analysis
+
+```
+./pet analyze <binary> --out <dir> [--names addr<TAB>name.tsv] [--sources <dir>]
+```
+
+Writes:
+
+| File | Content |
+|---|---|
+| `report.md` | build metadata, counts, unknown summary |
+| `inventory.json` | full machine-readable inventory |
+| `units.tsv` | address, size, symbol, demangled name |
+| `unknowns.md` | unnamed functions, classes without source, format strings, dotted keys |
+| `strings.txt` | URLs and dotted keys |
+
+This is the "just point it at a binary" mode: no project database, no agent.
