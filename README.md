@@ -1,3 +1,8 @@
+> **Fork note.** This fork adds `pet`, a macOS-software reconstruction tracker
+> (Mach-O inventory, claims, Evidence and build/test verification) that replaces
+> the ROM byte-match pipeline. See [PET.md](PET.md). The upstream notice below
+> still applies to the original code.
+
 ## This project is discontinued
 
 I've decided to stop working on decomp.wtf and archive it.

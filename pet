@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Run pet from a checkout without installing the package.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PYTHONPATH="$here/src${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m pet "$@"
